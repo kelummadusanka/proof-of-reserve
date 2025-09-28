@@ -22,6 +22,7 @@ use sp_version::RuntimeVersion;
 pub use frame_system::Call as SystemCall;
 pub use pallet_balances::Call as BalancesCall;
 pub use pallet_timestamp::Call as TimestampCall;
+pub use pallet_proof_of_reserve::Call as ProofOfReserveCall;
 #[cfg(any(feature = "std", test))]
 pub use sp_runtime::BuildStorage;
 
@@ -222,7 +223,6 @@ mod runtime {
 	#[runtime::pallet_index(6)]
 	pub type Sudo = pallet_sudo;
 
-	// Include the custom logic from the pallet-template in the runtime.
 	#[runtime::pallet_index(7)]
-	pub type Template = pallet_template;
+	pub type ProofOfReserve = pallet_proof_of_reserve;
 }

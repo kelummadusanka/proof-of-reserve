@@ -26,10 +26,10 @@ pallet-aura.workspace = true
 pallet-balances.workspace = true
 pallet-grandpa.workspace = true
 pallet-sudo.workspace = true
-pallet-template.workspace = true
 pallet-timestamp.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
 pallet-transaction-payment.workspace = true
+pallet-proof-of-reserve.workspace = true
 scale-info = { features = ["derive", "serde"], workspace = true }
 serde_json = { workspace = true, default-features = false, features = ["alloc"] }
 sp-api.workspace = true
@@ -66,8 +66,8 @@ std = [
 	"pallet-balances/std",
 	"pallet-grandpa/std",
 	"pallet-sudo/std",
-	"pallet-template/std",
 	"pallet-timestamp/std",
+	"pallet-proof-of-reserve/std",
 	"pallet-transaction-payment-rpc-runtime-api/std",
 	"pallet-transaction-payment/std",
 	"scale-info/std",
@@ -97,8 +97,8 @@ runtime-benchmarks = [
 	"pallet-balances/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-sudo/runtime-benchmarks",
-	"pallet-template/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
+	"pallet-proof-of-reserve/runtime-benchmarks",
 	"pallet-transaction-payment/runtime-benchmarks",
 	"sp-runtime/runtime-benchmarks",
 ]
@@ -112,8 +112,8 @@ try-runtime = [
 	"pallet-balances/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-sudo/try-runtime",
-	"pallet-template/try-runtime",
 	"pallet-timestamp/try-runtime",
+	"pallet-proof-of-reserve/try-runtime",
 	"pallet-transaction-payment/try-runtime",
 	"sp-runtime/try-runtime",
 ]

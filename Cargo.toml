@@ -8,14 +8,14 @@ edition = "2021"
 [workspace]
 members = [
     "node",
-    "pallets/template",
+    "pallets/proof-of-reserve",
     "runtime",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 solochain-template-runtime = { path = "./runtime", default-features = false }
-pallet-template = { path = "./pallets/template", default-features = false }
+pallet-proof-of-reserve = { path = "./pallets/proof-of-reserve", default-features = false }
 clap = { version = "4.5.13" }
 frame-benchmarking-cli = { version = "47.0.0", default-features = false }
 frame-metadata-hash-extension = { version = "0.8.0", default-features = false }
@@ -71,6 +71,7 @@ sp-session = { version = "38.1.0", default-features = false }
 sp-storage = { version = "22.0.0", default-features = false }
 sp-transaction-pool = { version = "36.0.0", default-features = false }
 sp-version = { version = "39.0.0", default-features = false }
+sp-std = { version = "14.0.0", default-features = false }
 substrate-wasm-builder = { version = "26.0.1", default-features = false }
 
 [profile.release]
@@ -81,4 +82,3 @@ panic = "unwind"
 codegen-units = 1
 inherits = "release"
 lto = true
-
