@@ -159,20 +159,17 @@ impl pallet_sudo::Config for Runtime {
 
 // Parameter types for the proof of reserve pallet
 parameter_types! {
-    /// Maximum number of assets that can be tracked in a reserve proof
-    pub const MaxAssetsPerProof: u32 = 50;
-    /// Maximum length for external proof data (signatures, merkle proofs, etc.)
-    pub const MaxProofDataLength: u32 = 2048;
-    /// Maximum length for asset identifier
-    pub const MaxAssetIdLength: u32 = 32;
+    /// Maximum length for proof data (transaction IDs, file hashes, etc.)
+    pub const MaxProofDataLength: u32 = 1024;
+    /// Maximum length for coin name
+    pub const MaxCoinNameLength: u32 = 32;
 }
 
 /// Configure the pallet-proof-of-reserve.
 impl pallet_proof_of_reserve::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
-    type MaxAssetsPerProof = MaxAssetsPerProof;
     type MaxProofDataLength = MaxProofDataLength;
-    type MaxAssetIdLength = MaxAssetIdLength;
+    type MaxCoinNameLength = MaxCoinNameLength;
     type WeightInfo = ();
 }

@@ -4,7 +4,6 @@ pub use pallet::*;
 
 #[frame_support::pallet]
 pub mod pallet {
-    use frame_support::traits::ExistenceRequirement;
     use frame_support::pallet_prelude::*;
     use frame_system::pallet_prelude::*;
     use frame_support::traits::{Currency, ReservableCurrency, Get};
@@ -23,416 +22,332 @@ pub mod pallet {
         /// The currency trait.
         type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId>;
 
-        /// Maximum number of assets that can be tracked in a reserve proof
-        #[pallet::constant]
-        type MaxAssetsPerProof: Get<u32>;
-
-        /// Maximum length for external proof data (signatures, merkle proofs, etc.)
+        /// Maximum length for proof data (transaction IDs, file hashes, etc.)
         #[pallet::constant]
         type MaxProofDataLength: Get<u32>;
 
-        /// Maximum length for asset identifier
+        /// Maximum length for coin name
         #[pallet::constant]
-        type MaxAssetIdLength: Get<u32>;
+        type MaxCoinNameLength: Get<u32>;
 
         /// Weight information for extrinsics
         type WeightInfo: WeightInfo;
     }
 
-    /// Information about a specific asset in a reserve proof
-    /// We use a tuple-based approach: (asset_id, amount, last_updated)
-    pub type AssetReserve<Balance> = (
-        BoundedVec<u8, ConstU32<32>>, // asset_id
-        Balance,                      // amount
-        u32,                         // last_updated
-    );
-
-    /// Helper functions for working with AssetReserve tuples
-    pub struct AssetReserveHelper;
-    
-    impl AssetReserveHelper {
-        pub fn new<Balance>(
-            asset_id: BoundedVec<u8, ConstU32<32>>, 
-            amount: Balance, 
-            last_updated: u32
-        ) -> AssetReserve<Balance> {
-            (asset_id, amount, last_updated)
-        }
-        
-        pub fn asset_id<Balance>(asset: &AssetReserve<Balance>) -> &BoundedVec<u8, ConstU32<32>> {
-            &asset.0
-        }
-        
-        pub fn amount<Balance>(asset: &AssetReserve<Balance>) -> &Balance {
-            &asset.1
-        }
-        
-        pub fn last_updated<Balance>(asset: &AssetReserve<Balance>) -> u32 {
-            asset.2
-        }
-    }
-
-    /// Complete reserve proof information
+    /// Information about a reserve entry
     #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, TypeInfo)]
-    #[scale_info(skip_type_params(AccountId, Balance, BlockNumber, BoundedAssets, BoundedProofData))]
-    pub struct ReserveProof<AccountId, Balance, BlockNumber, BoundedAssets, BoundedProofData> {
-        /// Account submitting the proof
-        pub prover: AccountId,
-        /// Total value in native currency
-        pub total_value: Balance,
-        /// List of assets and their amounts
-        pub assets: BoundedAssets,
-        /// External proof data (signatures, merkle proofs, etc.)
-        pub proof_data: BoundedProofData,
-        /// Block number when proof was submitted
-        pub block_number: BlockNumber,
-        /// Expiry block number
-        pub expiry_block: BlockNumber,
-        /// Whether this proof has been verified
-        pub is_verified: bool,
+    #[scale_info(skip_type_params(T))]
+    pub struct ReserveEntry<T: Config> {
+        /// Account that created the reserve
+        pub account: T::AccountId,
+        /// Proof data (transaction ID, file hash, etc.)
+        pub proof: BoundedVec<u8, T::MaxProofDataLength>,
+        /// Coin name (e.g., "BTC", "ETH")
+        pub coin_name: BoundedVec<u8, T::MaxCoinNameLength>,
+        /// Amount of the external coin
+        pub coin_amount: u128,
+        /// Ratio (coin value / native coin value)
+        pub ratio: u128,
+        /// Amount of native coins reserved
+        pub reserved_amount: BalanceOf<T>,
+        /// Block number when reserve was created
+        pub created_at: BlockNumberFor<T>,
     }
 
     type BalanceOf<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
-    type BoundedAssets<T> = BoundedVec<AssetReserve<BalanceOf<T>>, <T as Config>::MaxAssetsPerProof>;
-    type BoundedProofData<T> = BoundedVec<u8, <T as Config>::MaxProofDataLength>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
-        /// A reserve proof was submitted
-        ReserveProofSubmitted {
-            proof_id: T::Hash,
-            prover: T::AccountId,
-            total_value: BalanceOf<T>,
-            expiry_block: BlockNumberFor<T>,
+        /// Native coins were reserved based on proof
+        CoinReserved {
+            account: T::AccountId,
+            proof_hash: T::Hash,
+            coin_name: BoundedVec<u8, T::MaxCoinNameLength>,
+            coin_amount: u128,
+            ratio: u128,
+            reserved_amount: BalanceOf<T>,
         },
-        /// A reserve proof was verified
-        ReserveProofVerified {
-            proof_id: T::Hash,
-            verifier: T::AccountId,
+        /// Reserved native coins were released
+        CoinReleased {
+            account: T::AccountId,
+            proof_hash: T::Hash,
+            coin_name: BoundedVec<u8, T::MaxCoinNameLength>,
+            released_amount: BalanceOf<T>,
         },
-        /// A reserve proof was challenged
-        ReserveProofChallenged {
-            proof_id: T::Hash,
-            challenger: T::AccountId,
-            reason: BoundedVec<u8, ConstU32<256>>,
+        /// Reserve entry was updated
+        ReserveUpdated {
+            account: T::AccountId,
+            proof_hash: T::Hash,
+            new_reserved_amount: BalanceOf<T>,
         },
-        /// A reserve proof expired
-        ReserveProofExpired {
-            proof_id: T::Hash,
-        },
-        /// Asset reserves were updated
-        AssetReservesUpdated {
-            proof_id: T::Hash,
-            prover: T::AccountId,
-            asset_count: u32,
-        },
-
-           /// Pegged tokens were minted
-    PeggedMinted {
-        who: T::AccountId,
-        amount: BalanceOf<T>,
-    },
     }
 
     #[pallet::error]
     pub enum Error<T> {
-        /// Reserve proof does not exist
-        ProofNotFound,
-        /// Only the prover can update their proof
-        NotProofOwner,
-        /// Proof has already expired
-        ProofExpired,
-        /// Proof is already verified
-        AlreadyVerified,
-        /// Invalid asset data
-        InvalidAssetData,
+        /// Reserve entry does not exist
+        ReserveNotFound,
+        /// Only the reserve creator can modify it
+        NotReserveOwner,
         /// Proof data too long
         ProofDataTooLong,
-        /// Asset list too long
-        TooManyAssets,
-        /// Insufficient funds for bond
+        /// Coin name too long
+        CoinNameTooLong,
+        /// Insufficient funds for reservation
         InsufficientFunds,
-        /// Cannot verify own proof
-        CannotVerifyOwnProof,
-        /// Proof is not yet expired
-        ProofNotExpired,
-
-        CustodyNotSet, 
+        /// Reserve entry already exists for this proof
+        ReserveAlreadyExists,
+        /// Invalid ratio (cannot be zero)
+        InvalidRatio,
+        /// Invalid coin amount (cannot be zero)
+        InvalidCoinAmount,
+        /// Arithmetic overflow in calculation
+        ArithmeticOverflow,
+        /// Cannot release more than reserved
+        InsufficientReserved,
+        /// Invalid release amount (cannot be zero)
+        InvalidReleaseAmount,
     }
 
-    /// Storage for reserve proofs indexed by hash
+    /// Storage for reserve entries indexed by proof hash
     #[pallet::storage]
-    pub type ReserveProofs<T: Config> = StorageMap<
+    pub type Reserves<T: Config> = StorageMap<
         _,
         Blake2_128Concat,
         T::Hash,
-        ReserveProof<
-            T::AccountId,
-            BalanceOf<T>,
-            BlockNumberFor<T>,
-            BoundedAssets<T>,
-            BoundedProofData<T>
-        >
+        ReserveEntry<T>
     >;
 
-    /// Total supply of pegged tokens
-#[pallet::storage]
-#[pallet::getter(fn pegged_supply)]
-pub type PeggedSupply<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
-
-#[pallet::storage]
-#[pallet::getter(fn pegged_balances)]
-/// Pegged token balances per user
-pub type PeggedBalances<T: Config> = StorageMap<
-    _,
-    Blake2_128Concat,
-    T::AccountId,
-    BalanceOf<T>,
-    ValueQuery
->;
-
-    /// Map from account to their active proof IDs
+    /// Map from account to their reserve proof hashes
     #[pallet::storage]
-    pub type AccountProofs<T: Config> = StorageMap<
+    pub type AccountReserves<T: Config> = StorageMap<
         _,
         Blake2_128Concat,
         T::AccountId,
-        BoundedVec<T::Hash, ConstU32<10>>,
+        BoundedVec<T::Hash, ConstU32<100>>,
         ValueQuery
     >;
-#[pallet::storage]
-#[pallet::getter(fn custody_account)]
-/// The account that holds custody of deposited native tokens
-pub type CustodyAccount<T: Config> = StorageValue<_, T::AccountId>;
 
-    /// Counter for generating unique proof IDs
+    /// Total amount reserved across all entries
     #[pallet::storage]
-    pub type ProofCounter<T: Config> = StorageValue<_, u64, ValueQuery>;
+    #[pallet::getter(fn total_reserved)]
+    pub type TotalReserved<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-
-               /// Deposit native currency → mint pegged token
-        #[pallet::call_index(7)]
-        #[pallet::weight(10_000)]
-        pub fn deposit_and_mint(origin: OriginFor<T>, amount: BalanceOf<T>) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-            let custody = CustodyAccount::<T>::get().ok_or(Error::<T>::CustodyNotSet)?;
-
-            // transfer funds into custody
-            T::Currency::transfer(&who, &custody, amount, ExistenceRequirement::KeepAlive)
-                .map_err(|_| Error::<T>::InsufficientFunds)?;
-
-            // mint pegged token
-            PeggedBalances::<T>::mutate(&who, |bal| *bal += amount);
-            PeggedSupply::<T>::mutate(|supply| *supply += amount);
-
-            Self::deposit_event(Event::PeggedMinted { who, amount });
-            Ok(())
-        }
-
-        /// Submit a new reserve proof
+        /// Reserve native coins based on external coin proof
         #[pallet::call_index(0)]
-        #[pallet::weight(T::WeightInfo::submit_proof())]
-        pub fn submit_proof(
+        #[pallet::weight(T::WeightInfo::reserve_coin())]
+        pub fn reserve_coin(
             origin: OriginFor<T>,
-            assets: Vec<AssetReserve<BalanceOf<T>>>,
-            proof_data: Vec<u8>,
-            validity_period: BlockNumberFor<T>,
+            proof: Vec<u8>,
+            coin_name: Vec<u8>,
+            coin_amount: u128,
+            ratio: u128,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
-            // Validate input lengths
-            ensure!(
-                assets.len() <= T::MaxAssetsPerProof::get() as usize,
-                Error::<T>::TooManyAssets
-            );
-            ensure!(
-                proof_data.len() <= T::MaxProofDataLength::get() as usize,
-                Error::<T>::ProofDataTooLong
-            );
-
-            let current_block = <frame_system::Pallet<T>>::block_number();
-            let expiry_block = current_block.saturating_add(validity_period);
-
-            // Calculate total value (simplified - in practice you'd use price oracles)
-            let total_value = assets.iter()
-                .map(|asset| asset.1) // asset.amount (second element of tuple)
-                .fold(Zero::zero(), |acc: BalanceOf<T>, amount| acc.saturating_add(amount));
-
-            // Generate unique proof ID
-            let proof_counter = ProofCounter::<T>::get();
-            ProofCounter::<T>::put(proof_counter.saturating_add(1));
-            
-            let proof_id = T::Hashing::hash_of(&(&who, proof_counter, current_block));
+            // Validate inputs
+            ensure!(!proof.is_empty(), Error::<T>::ProofDataTooLong);
+            ensure!(!coin_name.is_empty(), Error::<T>::CoinNameTooLong);
+            ensure!(coin_amount > 0, Error::<T>::InvalidCoinAmount);
+            ensure!(ratio > 0, Error::<T>::InvalidRatio);
 
             // Create bounded vectors
-            let bounded_assets: BoundedAssets<T> = assets.try_into()
-                .map_err(|_| Error::<T>::TooManyAssets)?;
-            let bounded_proof_data: BoundedProofData<T> = proof_data.try_into()
+            let bounded_proof: BoundedVec<u8, T::MaxProofDataLength> = proof.try_into()
                 .map_err(|_| Error::<T>::ProofDataTooLong)?;
+            let bounded_coin_name: BoundedVec<u8, T::MaxCoinNameLength> = coin_name.try_into()
+                .map_err(|_| Error::<T>::CoinNameTooLong)?;
 
-            // Create the proof
-            let proof = ReserveProof {
-                prover: who.clone(),
-                total_value,
-                assets: bounded_assets,
-                proof_data: bounded_proof_data,
-                block_number: current_block,
-                expiry_block,
-                is_verified: false,
+            // Generate proof hash
+            let proof_hash = <T::Hashing as Hash>::hash_of(&(&who, &bounded_proof, &bounded_coin_name));
+
+            // Ensure reserve doesn't already exist
+            ensure!(!Reserves::<T>::contains_key(&proof_hash), Error::<T>::ReserveAlreadyExists);
+
+            // Calculate reserve amount: coin_amount * ratio
+            let reserve_amount_u128 = coin_amount.checked_mul(ratio)
+                .ok_or(Error::<T>::ArithmeticOverflow)?;
+
+            // Convert to Balance type
+            let reserve_amount: BalanceOf<T> = reserve_amount_u128.try_into()
+                .map_err(|_| Error::<T>::ArithmeticOverflow)?;
+
+            // Reserve the native coins
+            T::Currency::reserve(&who, reserve_amount)
+                .map_err(|_| Error::<T>::InsufficientFunds)?;
+
+            let current_block = <frame_system::Pallet<T>>::block_number();
+
+            // Create reserve entry
+            let reserve_entry = ReserveEntry {
+                account: who.clone(),
+                proof: bounded_proof,
+                coin_name: bounded_coin_name.clone(),
+                coin_amount,
+                ratio,
+                reserved_amount: reserve_amount,
+                created_at: current_block,
             };
 
-            // Store the proof
-            ReserveProofs::<T>::insert(&proof_id, &proof);
+            // Store the reserve
+            Reserves::<T>::insert(&proof_hash, &reserve_entry);
 
-            // Update account proofs mapping
-            AccountProofs::<T>::try_mutate(&who, |proofs| {
-                proofs.try_push(proof_id)
-                    .map_err(|_| Error::<T>::TooManyAssets)
+            // Update account reserves mapping
+            AccountReserves::<T>::try_mutate(&who, |reserves| {
+                reserves.try_push(proof_hash)
+                    .map_err(|_| Error::<T>::ArithmeticOverflow)
             })?;
 
-            Self::deposit_event(Event::ReserveProofSubmitted {
-                proof_id,
-                prover: who,
-                total_value,
-                expiry_block,
+            // Update total reserved
+            TotalReserved::<T>::mutate(|total| *total = total.saturating_add(reserve_amount));
+
+            Self::deposit_event(Event::CoinReserved {
+                account: who,
+                proof_hash,
+                coin_name: bounded_coin_name,
+                coin_amount,
+                ratio,
+                reserved_amount: reserve_amount,
             });
 
             Ok(())
         }
 
-        /// Verify a reserve proof (typically done by auditors or validators)
+        /// Release reserved native coins
         #[pallet::call_index(1)]
-        #[pallet::weight(T::WeightInfo::verify_proof())]
-        pub fn verify_proof(
+        #[pallet::weight(T::WeightInfo::release_coin())]
+        pub fn release_coin(
             origin: OriginFor<T>,
-            proof_id: T::Hash,
+            proof: Vec<u8>,
+            coin_name: Vec<u8>,
+            release_amount: BalanceOf<T>,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
-            let mut proof = ReserveProofs::<T>::get(&proof_id)
-                .ok_or(Error::<T>::ProofNotFound)?;
+            // Validate inputs
+            ensure!(!release_amount.is_zero(), Error::<T>::InvalidReleaseAmount);
 
-            // Ensure verifier is not the prover
-            ensure!(proof.prover != who, Error::<T>::CannotVerifyOwnProof);
-
-            let current_block = <frame_system::Pallet<T>>::block_number();
-            ensure!(current_block <= proof.expiry_block, Error::<T>::ProofExpired);
-            ensure!(!proof.is_verified, Error::<T>::AlreadyVerified);
-
-            // Mark as verified
-            proof.is_verified = true;
-            ReserveProofs::<T>::insert(&proof_id, &proof);
-
-            Self::deposit_event(Event::ReserveProofVerified {
-                proof_id,
-                verifier: who,
-            });
-
-            Ok(())
-        }
-
-        /// Challenge a reserve proof
-        #[pallet::call_index(2)]
-        #[pallet::weight(T::WeightInfo::challenge_proof())]
-        pub fn challenge_proof(
-            origin: OriginFor<T>,
-            proof_id: T::Hash,
-            reason: Vec<u8>,
-        ) -> DispatchResult {
-            let who = ensure_signed(origin)?;
-
-            let proof = ReserveProofs::<T>::get(&proof_id)
-                .ok_or(Error::<T>::ProofNotFound)?;
-
-            let current_block = <frame_system::Pallet<T>>::block_number();
-            ensure!(current_block <= proof.expiry_block, Error::<T>::ProofExpired);
-
-            let bounded_reason: BoundedVec<u8, ConstU32<256>> = reason.try_into()
+            // Create bounded vectors for proof hash generation
+            let bounded_proof: BoundedVec<u8, T::MaxProofDataLength> = proof.try_into()
                 .map_err(|_| Error::<T>::ProofDataTooLong)?;
+            let bounded_coin_name: BoundedVec<u8, T::MaxCoinNameLength> = coin_name.try_into()
+                .map_err(|_| Error::<T>::CoinNameTooLong)?;
 
-            Self::deposit_event(Event::ReserveProofChallenged {
-                proof_id,
-                challenger: who,
-                reason: bounded_reason,
+            // Generate proof hash
+            let proof_hash = <T::Hashing as Hash>::hash_of(&(&who, &bounded_proof, &bounded_coin_name));
+
+            // Get reserve entry
+            let mut reserve_entry = Reserves::<T>::get(&proof_hash)
+                .ok_or(Error::<T>::ReserveNotFound)?;
+
+            // Ensure caller is the reserve owner
+            ensure!(reserve_entry.account == who, Error::<T>::NotReserveOwner);
+
+            // Ensure we don't release more than reserved
+            ensure!(release_amount <= reserve_entry.reserved_amount, Error::<T>::InsufficientReserved);
+
+            // Unreserve the coins
+            T::Currency::unreserve(&who, release_amount);
+
+            // Update reserve entry
+            reserve_entry.reserved_amount = reserve_entry.reserved_amount.saturating_sub(release_amount);
+
+            // If fully released, remove the reserve entry
+            if reserve_entry.reserved_amount.is_zero() {
+                Reserves::<T>::remove(&proof_hash);
+                
+                // Remove from account reserves mapping
+                AccountReserves::<T>::mutate(&who, |reserves| {
+                    reserves.retain(|&hash| hash != proof_hash);
+                });
+            } else {
+                // Update the reserve entry
+                Reserves::<T>::insert(&proof_hash, &reserve_entry);
+            }
+
+            // Update total reserved
+            TotalReserved::<T>::mutate(|total| *total = total.saturating_sub(release_amount));
+
+            Self::deposit_event(Event::CoinReleased {
+                account: who,
+                proof_hash,
+                coin_name: bounded_coin_name,
+                released_amount: release_amount,
             });
 
             Ok(())
         }
 
-        /// Update asset reserves in an existing proof
-        #[pallet::call_index(3)]
-        #[pallet::weight(T::WeightInfo::update_assets())]
-        pub fn update_assets(
+        /// Update an existing reserve with new coin amount and ratio
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::WeightInfo::update_reserve())]
+        pub fn update_reserve(
             origin: OriginFor<T>,
-            proof_id: T::Hash,
-            assets: Vec<AssetReserve<BalanceOf<T>>>,
+            proof: Vec<u8>,
+            coin_name: Vec<u8>,
+            new_coin_amount: u128,
+            new_ratio: u128,
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
 
-            let mut proof = ReserveProofs::<T>::get(&proof_id)
-                .ok_or(Error::<T>::ProofNotFound)?;
+            // Validate inputs
+            ensure!(new_coin_amount > 0, Error::<T>::InvalidCoinAmount);
+            ensure!(new_ratio > 0, Error::<T>::InvalidRatio);
 
-            ensure!(proof.prover == who, Error::<T>::NotProofOwner);
+            // Create bounded vectors for proof hash generation
+            let bounded_proof: BoundedVec<u8, T::MaxProofDataLength> = proof.try_into()
+                .map_err(|_| Error::<T>::ProofDataTooLong)?;
+            let bounded_coin_name: BoundedVec<u8, T::MaxCoinNameLength> = coin_name.try_into()
+                .map_err(|_| Error::<T>::CoinNameTooLong)?;
 
-            let current_block = <frame_system::Pallet<T>>::block_number();
-            ensure!(current_block <= proof.expiry_block, Error::<T>::ProofExpired);
+            // Generate proof hash
+            let proof_hash = <T::Hashing as Hash>::hash_of(&(&who, &bounded_proof, &bounded_coin_name));
 
-            // Validate input
-            ensure!(
-                assets.len() <= T::MaxAssetsPerProof::get() as usize,
-                Error::<T>::TooManyAssets
-            );
+            // Get reserve entry
+            let mut reserve_entry = Reserves::<T>::get(&proof_hash)
+                .ok_or(Error::<T>::ReserveNotFound)?;
 
-            // Update assets
-            let bounded_assets: BoundedAssets<T> = assets.try_into()
-                .map_err(|_| Error::<T>::TooManyAssets)?;
+            // Ensure caller is the reserve owner
+            ensure!(reserve_entry.account == who, Error::<T>::NotReserveOwner);
 
-            let total_value = bounded_assets.iter()
-                .map(|asset| asset.1) // asset.amount (second element of tuple)
-                .fold(Zero::zero(), |acc: BalanceOf<T>, amount| acc.saturating_add(amount));
+            // Calculate new reserve amount
+            let new_reserve_amount_u128 = new_coin_amount.checked_mul(new_ratio)
+                .ok_or(Error::<T>::ArithmeticOverflow)?;
+            let new_reserve_amount: BalanceOf<T> = new_reserve_amount_u128.try_into()
+                .map_err(|_| Error::<T>::ArithmeticOverflow)?;
 
-            proof.assets = bounded_assets.clone();
-            proof.total_value = total_value;
-            proof.is_verified = false; // Reset verification status
+            let old_reserved = reserve_entry.reserved_amount;
 
-            ReserveProofs::<T>::insert(&proof_id, &proof);
+            if new_reserve_amount > old_reserved {
+                // Need to reserve more
+                let additional_reserve = new_reserve_amount.saturating_sub(old_reserved);
+                T::Currency::reserve(&who, additional_reserve)
+                    .map_err(|_| Error::<T>::InsufficientFunds)?;
+                
+                // Update total reserved
+                TotalReserved::<T>::mutate(|total| *total = total.saturating_add(additional_reserve));
+            } else if new_reserve_amount < old_reserved {
+                // Need to unreserve some
+                let release_amount = old_reserved.saturating_sub(new_reserve_amount);
+                T::Currency::unreserve(&who, release_amount);
+                
+                // Update total reserved
+                TotalReserved::<T>::mutate(|total| *total = total.saturating_sub(release_amount));
+            }
 
-            Self::deposit_event(Event::AssetReservesUpdated {
-                proof_id,
-                prover: who,
-                asset_count: bounded_assets.len() as u32,
+            // Update reserve entry
+            reserve_entry.coin_amount = new_coin_amount;
+            reserve_entry.ratio = new_ratio;
+            reserve_entry.reserved_amount = new_reserve_amount;
+
+            Reserves::<T>::insert(&proof_hash, &reserve_entry);
+
+            Self::deposit_event(Event::ReserveUpdated {
+                account: who,
+                proof_hash,
+                new_reserved_amount: new_reserve_amount,
             });
-
-            Ok(())
-        }
-
-        /// Remove expired proofs (can be called by anyone for cleanup)
-        #[pallet::call_index(4)]
-        #[pallet::weight(T::WeightInfo::cleanup_expired_proof())]
-        pub fn cleanup_expired_proof(
-            origin: OriginFor<T>,
-            proof_id: T::Hash,
-        ) -> DispatchResult {
-            let _who = ensure_signed(origin)?;
-
-            let proof = ReserveProofs::<T>::get(&proof_id)
-                .ok_or(Error::<T>::ProofNotFound)?;
-
-            let current_block = <frame_system::Pallet<T>>::block_number();
-            ensure!(current_block > proof.expiry_block, Error::<T>::ProofNotExpired);
-
-            // Remove from storage
-            ReserveProofs::<T>::remove(&proof_id);
-
-            // Remove from account proofs mapping
-            AccountProofs::<T>::mutate(&proof.prover, |proofs| {
-                proofs.retain(|&id| id != proof_id);
-            });
-
-            Self::deposit_event(Event::ReserveProofExpired { proof_id });
 
             Ok(())
         }
@@ -440,69 +355,60 @@ pub type CustodyAccount<T: Config> = StorageValue<_, T::AccountId>;
 
     // Helper functions
     impl<T: Config> Pallet<T> {
-        /// Get proof by ID
-        pub fn get_proof(proof_id: &T::Hash) -> Option<ReserveProof<
-            T::AccountId,
-            BalanceOf<T>,
-            BlockNumberFor<T>,
-            BoundedAssets<T>,
-            BoundedProofData<T>
-        >> {
-            ReserveProofs::<T>::get(proof_id)
+        /// Get reserve entry by proof hash
+        pub fn get_reserve(proof_hash: &T::Hash) -> Option<ReserveEntry<T>> {
+            Reserves::<T>::get(proof_hash)
         }
 
-        /// Get all proofs for an account
-        pub fn get_account_proofs(account: &T::AccountId) -> Vec<T::Hash> {
-            AccountProofs::<T>::get(account).into_inner()
+        /// Get all reserves for an account
+        pub fn get_account_reserves(account: &T::AccountId) -> Vec<T::Hash> {
+            AccountReserves::<T>::get(account).into_inner()
         }
 
-        /// Check if proof exists and is valid
-        pub fn is_proof_valid(proof_id: &T::Hash) -> bool {
-            if let Some(proof) = Self::get_proof(proof_id) {
-                let current_block = <frame_system::Pallet<T>>::block_number();
-                current_block <= proof.expiry_block
-            } else {
-                false
+        /// Get total reserved amount for an account
+        pub fn get_account_reserved_total(account: &T::AccountId) -> BalanceOf<T> {
+            let reserve_hashes = Self::get_account_reserves(account);
+            let mut total: BalanceOf<T> = Zero::zero();
+            
+            for hash in reserve_hashes {
+                if let Some(reserve) = Self::get_reserve(&hash) {
+                    total = total.saturating_add(reserve.reserved_amount);
+                }
             }
+            
+            total
         }
 
-        /// Get proof total value
-        pub fn get_proof_value(proof_id: &T::Hash) -> Option<BalanceOf<T>> {
-            Self::get_proof(proof_id).map(|proof| proof.total_value)
+        /// Generate proof hash from components
+        pub fn generate_proof_hash(
+            account: &T::AccountId,
+            proof: &[u8],
+            coin_name: &[u8],
+        ) -> T::Hash {
+            <T::Hashing as Hash>::hash_of(&(account, proof, coin_name))
         }
     }
 
     /// Weight functions (implement based on benchmarks)
     pub trait WeightInfo {
-        fn submit_proof() -> Weight;
-        fn verify_proof() -> Weight;
-        fn challenge_proof() -> Weight;
-        fn update_assets() -> Weight;
-        fn cleanup_expired_proof() -> Weight;
+        fn reserve_coin() -> Weight;
+        fn release_coin() -> Weight;
+        fn update_reserve() -> Weight;
     }
 
     /// Default weights implementation
     impl WeightInfo for () {
-        fn submit_proof() -> Weight {
+        fn reserve_coin() -> Weight {
             Weight::from_parts(50_000_000, 0)
                 .saturating_add(Weight::from_parts(0, 1024))
         }
-        fn verify_proof() -> Weight {
-            Weight::from_parts(25_000_000, 0)
+        fn release_coin() -> Weight {
+            Weight::from_parts(40_000_000, 0)
                 .saturating_add(Weight::from_parts(0, 512))
         }
-        fn challenge_proof() -> Weight {
-            Weight::from_parts(20_000_000, 0)
-        }
-        fn update_assets() -> Weight {
-            Weight::from_parts(40_000_000, 0)
-                .saturating_add(Weight::from_parts(0, 1024))
-        }
-        fn cleanup_expired_proof() -> Weight {
-            Weight::from_parts(15_000_000, 0)
+        fn update_reserve() -> Weight {
+            Weight::from_parts(45_000_000, 0)
+                .saturating_add(Weight::from_parts(0, 768))
         }
     }
 }
-
-
-
